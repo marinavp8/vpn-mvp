@@ -1,0 +1,683 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Viaje de un paquete por la VPN</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&family=Space+Grotesk:wght@500;600;700&display=swap">
+<style>
+/* Layout: una sola columna de lectura; la simulación (diagrama de red + inspector de cabeceras) es la pieza central. */
+:root {
+  --bg: #eef2f1; --surface: #ffffff; --sunken: #e4eae9; --ink: #142128; --muted: #56676e; --line: #cfd9d8;
+  --tunnel: #0b7a75; --tunnel-soft: rgba(11,122,117,.14); --inner: #a85a17; --inner-soft: rgba(168,90,23,.12);
+  --drop: #b83227; --drop-soft: rgba(184,50,39,.12); --ok: #2b7a4b; --ok-soft: rgba(43,122,75,.13);
+  --f-display: "Space Grotesk", "Segoe UI", system-ui, sans-serif;
+  --f-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --f-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0e1618; --surface: #162125; --sunken: #111b1e; --ink: #e2ebeb; --muted: #93a5a9; --line: #2a3a3e;
+    --tunnel: #3cc2b6; --tunnel-soft: rgba(60,194,182,.16); --inner: #e49a4f; --inner-soft: rgba(228,154,79,.14);
+    --drop: #f06b5c; --drop-soft: rgba(240,107,92,.15); --ok: #5cc28a; --ok-soft: rgba(92,194,138,.15);
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0e1618; --surface: #162125; --sunken: #111b1e; --ink: #e2ebeb; --muted: #93a5a9; --line: #2a3a3e;
+  --tunnel: #3cc2b6; --tunnel-soft: rgba(60,194,182,.16); --inner: #e49a4f; --inner-soft: rgba(228,154,79,.14);
+  --drop: #f06b5c; --drop-soft: rgba(240,107,92,.15); --ok: #5cc28a; --ok-soft: rgba(92,194,138,.15);
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body {
+  background: var(--bg); color: var(--ink); font: 16px/1.6 var(--f-body);
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 32px 64px;
+}
+.wrap { max-width: 1080px; margin: 0 auto; display: grid; gap: 56px; }
+h1, h2, h3 { font-family: var(--f-display); text-wrap: balance; margin: 0; letter-spacing: -0.01em; }
+h1 { font-size: clamp(2rem, 4.4vw, 3.1rem); line-height: 1.08; font-weight: 700; }
+h2 { font-size: 1.6rem; line-height: 1.2; }
+h3 { font-size: 1.1rem; }
+p { margin: 0; }
+.prose { max-width: 66ch; display: grid; gap: 12px; }
+.muted { color: var(--muted); }
+code, .mono { font-family: var(--f-mono); font-size: .88em; }
+.eyebrow { font: 600 .74rem/1 var(--f-mono); letter-spacing: .12em; text-transform: uppercase; color: var(--tunnel); }
+section { display: grid; gap: 20px; }
+header.hero { display: grid; gap: 14px; }
+.lede { font-size: 1.15rem; max-width: 62ch; color: var(--muted); }
+.lede b { color: var(--ink); font-weight: 600; }
+
+/* ---------- simulación ---------- */
+.sim { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; }
+.scenarios { display: flex; flex-wrap: wrap; gap: 8px; padding: 16px; border-bottom: 1px solid var(--line); }
+.scn { font: 500 .88rem/1.2 var(--f-body); padding: 8px 12px; border-radius: 999px; border: 1px solid var(--line);
+  background: transparent; color: var(--ink); cursor: pointer; display: inline-flex; gap: 7px; align-items: center; }
+.scn .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
+.scn[data-kind="ok"] .dot { background: var(--ok); }
+.scn[data-kind="drop"] .dot { background: var(--drop); }
+.scn[data-kind="plain"] .dot { background: var(--muted); }
+.scn[aria-pressed="true"] { background: var(--ink); color: var(--surface); border-color: var(--ink); }
+.scn:focus-visible, button:focus-visible, input:focus-visible { outline: 2px solid var(--tunnel); outline-offset: 2px; }
+.stage { overflow-x: auto; background: var(--sunken); border-bottom: 1px solid var(--line); }
+.stage svg { display: block; width: 100%; min-width: 720px; height: auto; }
+.node rect { fill: var(--surface); stroke: var(--line); stroke-width: 1.5; }
+.node.active rect { stroke: var(--ink); stroke-width: 2.5; }
+.node .t { font: 600 14px var(--f-display); fill: var(--ink); }
+.node .s { font: 11px var(--f-mono); fill: var(--muted); }
+.node.guarded rect { stroke-dasharray: 5 4; }
+.edge { stroke: var(--line); stroke-width: 2.5; }
+.edge.blocked { stroke-dasharray: 4 5; }
+.vmbox { fill: none; stroke: var(--muted); stroke-dasharray: 3 6; stroke-width: 1.2; }
+.vmlabel { font: 600 11px var(--f-mono); fill: var(--muted); letter-spacing: .08em; }
+.tunnel { fill: none; stroke: var(--tunnel-soft); stroke-width: 26; stroke-linejoin: round; stroke-linecap: round; transition: opacity .3s; }
+.tunnel-label { font: 600 11px var(--f-mono); fill: var(--tunnel); letter-spacing: .06em; transition: opacity .3s; }
+.pkt-outer { fill: var(--tunnel); }
+.pkt-inner { fill: var(--inner); }
+.pkt-label { font: 600 10px var(--f-mono); fill: #fff; }
+.pulse { fill: none; stroke: var(--tunnel); stroke-width: 2; opacity: 0; }
+.pulse.on { animation: pulse 1.2s ease-out infinite; }
+@keyframes pulse { 0% { r: 30; opacity: .7; } 100% { r: 62; opacity: 0; } }
+.xmark { stroke: var(--drop); stroke-width: 5; stroke-linecap: round; }
+
+.controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 14px 16px; border-bottom: 1px solid var(--line); }
+.btn { font: 600 .9rem/1 var(--f-body); padding: 10px 14px; border-radius: 8px; border: 1px solid var(--line);
+  background: var(--surface); color: var(--ink); cursor: pointer; }
+.btn.primary { background: var(--tunnel); border-color: var(--tunnel); color: var(--surface); }
+.btn:disabled { opacity: .4; cursor: default; }
+.progress { margin-left: auto; display: flex; gap: 5px; align-items: center; flex-wrap: wrap; }
+.progress i { width: 18px; height: 4px; border-radius: 2px; background: var(--line); }
+.progress i.done { background: var(--tunnel); }
+.progress i.now { background: var(--ink); }
+
+.inspector { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr); gap: 0; }
+.explain { padding: 20px; display: grid; gap: 10px; align-content: start; border-right: 1px solid var(--line); }
+.stepno { font: 500 .78rem var(--f-mono); color: var(--muted); }
+.explain h3 { font-size: 1.25rem; }
+.verdict { justify-self: start; font: 600 .78rem/1 var(--f-mono); padding: 6px 10px; border-radius: 999px; letter-spacing: .04em; }
+.verdict.ok { background: var(--ok-soft); color: var(--ok); }
+.verdict.drop { background: var(--drop-soft); color: var(--drop); }
+.verdict.info { background: var(--tunnel-soft); color: var(--tunnel); }
+.headers { padding: 20px; display: grid; gap: 10px; align-content: start; min-width: 0; }
+.headers .cap { font: 600 .72rem var(--f-mono); letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+.layer { border-radius: 8px; padding: 10px 12px; font: .82rem/1.5 var(--f-mono); border: 1px solid var(--line); overflow-wrap: anywhere; }
+.layer b { font-weight: 600; display: block; font-size: .72rem; letter-spacing: .08em; text-transform: uppercase; margin-bottom: 2px; }
+.layer.outer { border-color: var(--tunnel); background: var(--tunnel-soft); }
+.layer.outer b { color: var(--tunnel); }
+.layer.inner { border-color: var(--inner); background: var(--inner-soft); }
+.layer.inner b { color: var(--inner); }
+.layer.sealed { border-style: dashed; }
+.layer.note { background: var(--sunken); }
+.rules { list-style: none; margin: 0; padding: 0; font: .8rem/1.4 var(--f-mono); display: grid; gap: 3px; }
+.rules li { padding: 5px 8px; border-radius: 6px; display: flex; gap: 8px; justify-content: space-between; color: var(--muted); }
+.rules li.passed { text-decoration: line-through; text-decoration-color: var(--line); }
+.rules li.hit { color: var(--ink); background: var(--sunken); outline: 1.5px solid var(--ink); text-decoration: none; }
+.rules li.hit.drop .act { color: var(--drop); }
+.rules li.hit.ok .act { color: var(--ok); }
+.rules .act { font-weight: 600; flex: none; }
+
+/* ---------- tarjetas / secciones ---------- */
+.grid2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 20px; display: grid; gap: 12px; align-content: start; min-width: 0; }
+.pieces { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 16px; }
+.piece { border-top: 3px solid var(--line); padding-top: 12px; display: grid; gap: 6px; align-content: start; }
+.piece.t { border-top-color: var(--tunnel); }
+.piece.i { border-top-color: var(--inner); }
+.piece .k { font: 600 .78rem var(--f-mono); color: var(--muted); }
+ol.seq { margin: 0; padding: 0; list-style: none; display: grid; gap: 10px; counter-reset: s; }
+ol.seq li { counter-increment: s; display: grid; grid-template-columns: 30px minmax(0,1fr); gap: 10px; }
+ol.seq li::before { content: counter(s); font: 600 .85rem/30px var(--f-mono); text-align: center; height: 30px; border-radius: 50%; background: var(--sunken); color: var(--ink); }
+ol.seq .who { font: 600 .78rem var(--f-mono); color: var(--tunnel); }
+.keybox { display: grid; gap: 8px; }
+.keyrow { display: grid; gap: 4px; }
+.keyrow span { font: 600 .72rem var(--f-mono); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.keyval { font: .85rem/1.4 var(--f-mono); background: var(--sunken); border-radius: 6px; padding: 8px 10px; overflow-wrap: anywhere; min-height: 2.2em; }
+.keyval.priv { color: var(--inner); }
+.keyval.pub { color: var(--tunnel); }
+.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+input[type="text"] { font: 1rem var(--f-mono); padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--sunken); color: var(--ink); width: 15ch; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.seg button { font: 500 .85rem var(--f-body); padding: 9px 12px; border: 0; background: transparent; color: var(--ink); cursor: pointer; }
+.seg button[aria-pressed="true"] { background: var(--ink); color: var(--surface); }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { font: .8rem var(--f-mono); padding: 5px 9px; border-radius: 6px; border: 1px solid var(--line); background: transparent; color: var(--ink); cursor: pointer; }
+.answer { display: grid; gap: 8px; }
+.answer .line { display: grid; grid-template-columns: 22px minmax(0,1fr); gap: 8px; align-items: start; }
+.answer .ic { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; font: 700 .8rem var(--f-mono); color: var(--surface); }
+.ic.t { background: var(--tunnel); } .ic.d { background: var(--muted); } .ic.x { background: var(--drop); } .ic.o { background: var(--ok); }
+.tablewrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: .9rem; }
+th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font: 600 .72rem var(--f-mono); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+td.act { font: 600 .82rem var(--f-mono); white-space: nowrap; }
+td.act.drop { color: var(--drop); } td.act.ok { color: var(--ok); }
+details.ranges summary { cursor: pointer; color: var(--muted); font-size: .9rem; }
+details.ranges p { font: .78rem/1.6 var(--f-mono); color: var(--muted); margin-top: 8px; overflow-wrap: anywhere; }
+footer { color: var(--muted); font-size: .88rem; border-top: 1px solid var(--line); padding-top: 16px; }
+
+@media (max-width: 760px) {
+  .inspector, .grid2 { grid-template-columns: minmax(0, 1fr); }
+  .explain { border-right: 0; border-bottom: 1px solid var(--line); }
+  .progress { margin-left: 0; width: 100%; }
+}
+@media (prefers-reduced-motion: reduce) { .pulse.on { animation: none; opacity: .5; } .tunnel, .tunnel-label { transition: none; } }
+</style>
+<style>
+/* lo que añade el visor de artifacts: reset mínimo */
+body { margin: 0; }
+[hidden] { display: none !important; }
+img { max-width: 100%; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="hero">
+    <span class="eyebrow">CodeCrypto Academy · Redes</span>
+    <h1>¿Qué le pasa a un paquete cuando activas la VPN?</h1>
+    <p class="lede">Nuestra VPN usa <b>WireGuard</b>: tu portátil cifra cada paquete, lo mete dentro de otro paquete UDP y lo manda al servidor
+      <code>alumnos-vm</code> en Google Cloud. Allí se descifra, pasa por un <b>firewall</b> y sale a internet con la IP del servidor.
+      Elige un caso y sigue el paquete salto a salto.</p>
+  </header>
+
+  <section aria-labelledby="sim-h">
+    <h2 id="sim-h" hidden>Simulación</h2>
+    <div class="sim">
+      <div class="scenarios" id="scenarios" role="group" aria-label="Casos"></div>
+      <div class="stage">
+        <svg id="net" viewBox="0 0 1000 350" role="img" aria-label="Diagrama de red: portátil, router de casa, internet, servidor alumnos-vm y contenedor VPN"></svg>
+      </div>
+      <div class="controls">
+        <button class="btn" id="prev">← Anterior</button>
+        <button class="btn primary" id="play">▶ Reproducir</button>
+        <button class="btn" id="next">Siguiente →</button>
+        <button class="btn" id="reset">Reiniciar</button>
+        <div class="progress" id="progress" aria-hidden="true"></div>
+      </div>
+      <div class="inspector">
+        <div class="explain">
+          <span class="stepno" id="stepno"></span>
+          <h3 id="stitle"></h3>
+          <p id="sbody"></p>
+          <span class="verdict" id="verdict" hidden></span>
+        </div>
+        <div class="headers">
+          <span class="cap">Lo que lleva el paquete en este punto</span>
+          <div id="layers" style="display:grid;gap:8px"></div>
+          <div id="rulesbox" hidden>
+            <span class="cap">Firewall del contenedor · cadena VPN-FWD (se lee de arriba abajo)</span>
+            <ol class="rules" id="rules"></ol>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section aria-labelledby="pieces-h">
+    <span class="eyebrow">Las piezas</span>
+    <h2 id="pieces-h">Qué hay en el servidor</h2>
+    <div class="pieces">
+      <div class="piece t"><span class="k">UDP 51820</span><h3>Túnel WireGuard</h3>
+        <p>El tráfico cifrado entra directo al contenedor. No pasa por Traefik: Traefik entiende HTTP, y esto son datagramas UDP opacos.</p></div>
+      <div class="piece"><span class="k">HTTPS 443 · Traefik</span><h3>Portal web</h3>
+        <p><code>vpn.alumnos.codecrypto.academy</code>: login, alta y baja de dispositivos. Traefik termina el TLS con el certificado comodín.</p></div>
+      <div class="piece"><span class="k">contenedor vpn · Go</span><h3>Portal + interfaz wg0</h3>
+        <p>Un único programa gestiona la interfaz <code>wg0</code> (10.66.0.1/22) y su lista de peers. Corre sin privilegios salvo <code>NET_ADMIN</code> y con el disco en solo lectura.</p></div>
+      <div class="piece i"><span class="k">OIDC · realm codecrypto</span><h3>Keycloak</h3>
+        <p>Decide quién entra. El portal solo acepta usuarios con el rol <code>staff</code>; el grupo <code>vpn-admin</code> puede revocar cualquier dispositivo.</p></div>
+      <div class="piece"><span class="k">volumen vpn_data</span><h3>Estado</h3>
+        <p><code>peers.json</code> (clave pública + IP de cada dispositivo) y <code>server.key</code>. Al arrancar, <code>wg0</code> se reconstruye desde ahí.</p></div>
+    </div>
+  </section>
+
+  <section aria-labelledby="keys-h">
+    <span class="eyebrow">Identidad y claves</span>
+    <h2 id="keys-h">Cómo consigues tu configuración</h2>
+    <div class="grid2">
+      <div class="panel">
+        <h3>El flujo, en orden</h3>
+        <ol class="seq">
+          <li><div><span class="who">navegador → portal</span><p>Abres el portal. Te manda a Keycloak con un <code>state</code>, un <code>nonce</code> y un reto PKCE guardados en una cookie firmada.</p></div></li>
+          <li><div><span class="who">navegador → Keycloak</span><p>Haces login. Keycloak te devuelve al portal con un <code>code</code> de un solo uso.</p></div></li>
+          <li><div><span class="who">portal → Keycloak</span><p>El portal canjea el <code>code</code> (más el verificador PKCE) por un <code>id_token</code>, comprueba la firma, el <code>nonce</code> y que tengas el rol <code>staff</code>.</p></div></li>
+          <li><div><span class="who">en tu navegador</span><p>Al crear un dispositivo, el navegador genera un par de claves X25519. La privada <b>no sale de tu equipo</b>.</p></div></li>
+          <li><div><span class="who">navegador → portal</span><p>Solo se envía la clave pública. El portal te asigna una IP libre (10.66.0.x) y añade el peer a <code>wg0</code> al momento.</p></div></li>
+          <li><div><span class="who">en tu navegador</span><p>El navegador monta el <code>.conf</code> y el QR con tu clave privada. Si cierras la página sin guardarlo, no hay forma de recuperarlo.</p></div></li>
+        </ol>
+      </div>
+      <div class="panel">
+        <h3>Pruébalo: genera un par de claves</h3>
+        <p class="muted">Esto ejecuta lo mismo que el portal, con la criptografía del propio navegador (WebCrypto). Nada de esto se envía a ningún sitio.</p>
+        <div class="row"><button class="btn primary" id="genkey">Generar claves</button><button class="btn" id="showpriv" disabled>Mostrar privada</button></div>
+        <div class="keybox">
+          <div class="keyrow"><span>Clave privada · se queda en tu equipo</span><div class="keyval priv" id="kpriv">—</div></div>
+          <div class="keyrow"><span>Clave pública · la única que recibe el servidor</span><div class="keyval pub" id="kpub">—</div></div>
+        </div>
+        <p class="muted" id="keynote">Las dos son 32 bytes en base64. De la privada se calcula la pública, pero no al revés: por eso el servidor puede guardar las públicas sin riesgo.</p>
+      </div>
+    </div>
+  </section>
+
+  <section aria-labelledby="route-h">
+    <span class="eyebrow">AllowedIPs</span>
+    <h2 id="route-h">¿Por dónde va esta IP?</h2>
+    <div class="prose">
+      <p>En tu <code>.conf</code>, <code>AllowedIPs</code> dice qué destinos mete WireGuard en el túnel. La primera versión ponía <code>0.0.0.0/0</code> (todo).
+        Con Tailscale activo eso dejaba sin DNS a algunos portátiles: las consultas a la red de casa entraban en el túnel y el servidor las descartaba.
+        La versión actual mete todo internet <b>menos las redes privadas</b>.</p>
+    </div>
+    <div class="panel">
+      <div class="row">
+        <label for="ip" class="mono muted">IP destino</label>
+        <input type="text" id="ip" value="192.168.1.1" inputmode="decimal" autocomplete="off" spellcheck="false">
+        <div class="seg" role="group" aria-label="Configuración">
+          <button id="cfg-new" aria-pressed="true">Config actual</button>
+          <button id="cfg-old" aria-pressed="false">Config antigua (0.0.0.0/0)</button>
+        </div>
+      </div>
+      <div class="chips" id="chips"></div>
+      <div class="answer" id="answer" aria-live="polite"></div>
+      <details class="ranges"><summary>Ver los 52 rangos de la config actual</summary><p id="rangelist"></p></details>
+    </div>
+  </section>
+
+  <section aria-labelledby="fw-h">
+    <span class="eyebrow">Firewall</span>
+    <h2 id="fw-h">Qué se puede hacer desde dentro del túnel</h2>
+    <div class="prose"><p>Las reglas están en el propio contenedor y se evalúan en orden: gana la primera que coincide.</p></div>
+    <div class="panel tablewrap">
+      <table>
+        <thead><tr><th>Destino</th><th>Qué es</th><th>Acción</th></tr></thead>
+        <tbody>
+          <tr><td><code>10.66.0.0/22</code> (otro cliente)</td><td>Otros portátiles conectados a la VPN</td><td class="act drop">DROP</td></tr>
+          <tr><td><code>10/8 · 172.16/12 · 192.168/16</code></td><td>Red Docker <code>proyectos</code> (postgres, mongo, redis…), red interna de GCP</td><td class="act drop">DROP</td></tr>
+          <tr><td><code>100.64/10</code></td><td>Espacio compartido (CGNAT, Tailscale)</td><td class="act drop">DROP</td></tr>
+          <tr><td><code>169.254.169.254</code></td><td>Servidor de metadatos de GCP: daría credenciales de la VM</td><td class="act drop">DROP</td></tr>
+          <tr><td>TCP <code>25</code></td><td>SMTP saliente, para que nadie envíe spam con la IP de la academia</td><td class="act drop">REJECT</td></tr>
+          <tr><td>resto de internet</td><td>Navegación normal</td><td class="act ok">ACCEPT + NAT</td></tr>
+          <tr><td><code>10.66.0.1</code> (el servidor)</td><td>Solo responde a ping, para diagnosticar</td><td class="act ok">ping</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <footer>IPs de casa y de la red local de ejemplo. El servidor, el dominio y las reglas son los reales de <code>alumnos-vm</code>.</footer>
+</div>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+// ---------------- red ----------------
+const NODES = {
+  laptop:   { x: 80,  y: 205, t: "Tu portátil", s: "LAN 192.168.1.34" },
+  router:   { x: 245, y: 205, t: "Router de casa", s: "NAT → 88.12.34.56" },
+  internet: { x: 420, y: 205, t: "Internet", s: "ISP, routers…" },
+  web:      { x: 420, y: 70,  t: "ifconfig.me", s: "34.160.111.145" },
+  host:     { x: 610, y: 205, t: "host alumnos-vm", s: "35.255.164.51" },
+  vpn:      { x: 800, y: 130, t: "contenedor vpn", s: "wg0 10.66.0.1" },
+  proyectos:{ x: 800, y: 290, t: "red proyectos", s: "postgres, mongo…", guarded: true },
+  meta:     { x: 935, y: 210, t: "metadatos", s: "169.254.169.254", guarded: true, w: 104 },
+};
+const EDGES = [["laptop","router"],["router","internet"],["internet","web"],["internet","host"],["host","vpn"],
+  ["vpn","proyectos",true],["vpn","meta",true]];
+const W = 132, H = 54;
+const svgNS = "http://www.w3.org/2000/svg";
+function mk(tag, attrs = {}, parent) {
+  const e = document.createElementNS(svgNS, tag);
+  for (const k in attrs) e.setAttribute(k, attrs[k]);
+  if (parent) parent.appendChild(e);
+  return e;
+}
+const svg = $("net");
+mk("rect", { class: "vmbox", x: 530, y: 18, width: 462, height: 322, rx: 14 }, svg);
+mk("text", { class: "vmlabel", x: 548, y: 40 }, svg).textContent = "GOOGLE CLOUD · VM alumnos-vm";
+const tunnel = mk("polyline", { class: "tunnel", points: ["laptop","router","internet","host","vpn"].map(n => `${NODES[n].x},${NODES[n].y}`).join(" ") }, svg);
+const tunnelLabel = mk("text", { class: "tunnel-label", x: 250, y: 252 }, svg);
+tunnelLabel.textContent = "TÚNEL WIREGUARD · UDP 51820";
+for (const [a, b, blocked] of EDGES)
+  mk("line", { class: "edge" + (blocked ? " blocked" : ""), x1: NODES[a].x, y1: NODES[a].y, x2: NODES[b].x, y2: NODES[b].y }, svg);
+const nodeEls = {};
+for (const [id, n] of Object.entries(NODES)) {
+  const w = n.w || W;
+  const g = mk("g", { class: "node" + (n.guarded ? " guarded" : ""), transform: `translate(${n.x},${n.y})` }, svg);
+  mk("rect", { x: -w / 2, y: -H / 2, width: w, height: H, rx: 10 }, g);
+  mk("text", { class: "t", x: 0, y: -4, "text-anchor": "middle" }, g).textContent = n.t;
+  mk("text", { class: "s", x: 0, y: 14, "text-anchor": "middle" }, g).textContent = n.s;
+  nodeEls[id] = g;
+}
+const pulse = mk("circle", { class: "pulse", cx: 0, cy: 0, r: 30 }, svg);
+const pkt = mk("g", {}, svg);
+const pOuter = mk("rect", { class: "pkt-outer", x: -30, y: -15, width: 60, height: 30, rx: 7 }, pkt);
+const pInner = mk("rect", { class: "pkt-inner", x: -21, y: -9, width: 42, height: 18, rx: 4 }, pkt);
+const pLabel = mk("text", { class: "pkt-label", x: 0, y: 4, "text-anchor": "middle" }, pkt);
+const xmark = mk("g", {}, pkt);
+mk("line", { class: "xmark", x1: 26, y1: -30, x2: 46, y2: -10 }, xmark);
+mk("line", { class: "xmark", x1: 46, y1: -30, x2: 26, y2: -10 }, xmark);
+
+// ---------------- escenarios ----------------
+const RULES = [
+  ["-o wg0 (hacia otro cliente)", "DROP"], ["-d 10.0.0.0/8", "DROP"], ["-d 172.16.0.0/12", "DROP"], ["-d 192.168.0.0/16", "DROP"],
+  ["-d 100.64.0.0/10", "DROP"], ["-d 169.254.0.0/16", "DROP"], ["-d 127/8, 224/4, 240/4, 0/8", "DROP"],
+  ["-p tcp --dport 25", "REJECT"], ["-o eth0 (internet)", "ACCEPT"], ["todo lo demás", "DROP"],
+];
+const L = (kind, title, text, sealed) => ({ kind, title, text, sealed });
+const outerHome = (src) => L("outer", "Paquete exterior · IP + UDP", `${src} → 35.255.164.51:51820  (UDP)`);
+const wgHdr = L("note", "Cabecera WireGuard", "tipo 4 = datos · índice del receptor · contador anti-replay · cifrado ChaCha20-Poly1305");
+const innerSealed = (dst, proto) => L("inner", "Paquete original · cifrado", `10.66.0.2 → ${dst}  (${proto})`, true);
+const innerOpen = (dst, proto) => L("inner", "Paquete original", `10.66.0.2 → ${dst}  (${proto})`);
+
+// los primeros pasos son iguales para cualquier destino que vaya por el túnel
+function tunnelPrefix(dst, proto, why) {
+  return [
+    { at: "laptop", wrap: "inner", label: "IP", title: "Tu aplicación envía un paquete",
+      body: `Va a ${dst}. El sistema mira la tabla de rutas: ${why} Así que el paquete se entrega a la interfaz de WireGuard en vez de a la tarjeta de red.`,
+      layers: [innerOpen(dst, proto), L("note", "Decisión de ruta", "destino dentro de AllowedIPs → interfaz utun (WireGuard)")] },
+    { at: "laptop", wrap: "both", label: "WG", title: "WireGuard lo cifra y lo envuelve",
+      body: "Cifra el paquete entero con la clave de sesión acordada con el servidor y lo mete dentro de un datagrama UDP nuevo dirigido a 35.255.164.51:51820.",
+      layers: [outerHome("192.168.1.34:53989"), wgHdr, innerSealed(dst, proto)] },
+    { path: ["laptop", "router"], wrap: "both", label: "WG", title: "Tu router hace NAT",
+      body: "Tu router cambia el origen del paquete exterior por la IP pública de tu casa. El interior no lo puede leer: solo ve UDP cifrado.",
+      layers: [outerHome("88.12.34.56:60668"), wgHdr, innerSealed(dst, proto)] },
+    { path: ["router", "internet", "host"], wrap: "both", label: "WG", title: "Cruza internet sin que nadie vea el contenido",
+      body: "Tu operador y cualquier router intermedio solo ven que hablas por UDP con 35.255.164.51. No saben a qué web vas ni qué envías. El firewall de GCP deja pasar el UDP 51820 y Docker lo entrega al contenedor.",
+      layers: [outerHome("88.12.34.56:60668"), wgHdr, innerSealed(dst, proto)] },
+    { path: ["host", "vpn"], wrap: "inner", label: "IP", title: "El contenedor lo descifra",
+      body: "wg0 descifra con la clave del servidor y comprueba que la clave pública que lo firmó tiene asignada la IP 10.66.0.2 (cryptokey routing). Si alguien falsificase el origen, se descartaría aquí.",
+      layers: [innerOpen(dst, proto), L("note", "Peer verificado", "clave RXUx…  ↔  AllowedIPs 10.66.0.2/32 ✓")] },
+  ];
+}
+function fwStep(dst, proto, hit, body, title) {
+  const act = RULES[hit][1];
+  const ok = act === "ACCEPT";
+  return { at: "vpn", wrap: "inner", label: "IP", x: !ok, title: title || (ok ? "El firewall lo deja salir" : `El firewall lo descarta (${act})`),
+    body, layers: [innerOpen(dst, proto)], hit, verdict: ok ? ["ok", "ACCEPT · regla " + (hit + 1)] : ["drop", act + " · regla " + (hit + 1)] };
+}
+
+const SCENARIOS = [
+  { id: "novpn", kind: "plain", name: "Sin VPN", vpn: false, steps: [
+    { at: "laptop", wrap: "inner", label: "IP", title: "Sin VPN: tu aplicación envía un paquete",
+      body: "Vas a ifconfig.me. Sin VPN, la ruta por defecto lleva todo a tu router de casa.",
+      layers: [L("inner", "Paquete", "192.168.1.34 → 34.160.111.145:443  (TCP · TLS)"), L("note", "Decisión de ruta", "default → 192.168.1.1 (en0)")] },
+    { path: ["laptop", "router"], wrap: "inner", label: "IP", title: "Tu router hace NAT",
+      body: "El router cambia el origen por la IP pública de tu casa. Desde aquí, tu operador ve a qué IP te conectas (y el nombre del sitio por SNI/DNS).",
+      layers: [L("inner", "Paquete", "88.12.34.56 → 34.160.111.145:443  (TCP · TLS)")] },
+    { path: ["router", "internet", "web"], wrap: "inner", label: "IP", title: "Llega a la web",
+      body: "ifconfig.me te dice la IP desde la que le hablas.",
+      layers: [L("inner", "Paquete", "88.12.34.56 → 34.160.111.145:443")] },
+    { path: ["web", "internet", "router", "laptop"], wrap: "inner", label: "IP", title: "Resultado: ve la IP de tu casa",
+      body: "La respuesta vuelve por el mismo camino. Cualquier servicio ve tu IP doméstica.",
+      layers: [L("note", "Respuesta de ifconfig.me", "88.12.34.56")], verdict: ["info", "TU IP: 88.12.34.56"] },
+  ]},
+  { id: "web", kind: "ok", name: "Con VPN: navegar", vpn: true, steps: [
+    ...tunnelPrefix("34.160.111.145:443", "TCP · TLS", "0.0.0.0/1 y 128.0.0.0/1 apuntan a la interfaz utun."),
+    fwStep("34.160.111.145:443", "TCP · TLS", 8, "Va de las reglas 1 a 9 de arriba abajo. No es otro cliente, ni red privada, ni metadatos, ni SMTP: la primera que coincide es «sale por eth0». Además se aplica MASQUERADE: el origen 10.66.0.2 se sustituye por la IP del contenedor."),
+    { path: ["vpn", "host", "internet", "web"], wrap: "inner", label: "IP", title: "Sale a internet con la IP del servidor",
+      body: "El host vuelve a hacer NAT y el paquete sale de Google Cloud con 35.255.164.51 como origen. ifconfig.me nunca ve tu casa.",
+      layers: [L("inner", "Paquete", "35.255.164.51 → 34.160.111.145:443  (TCP · TLS)")] },
+    { path: ["web", "internet", "host", "vpn"], wrap: "inner", label: "IP", title: "La respuesta vuelve al contenedor",
+      body: "conntrack recuerda la conexión y deshace los NAT: el destino vuelve a ser 10.66.0.2, que wg0 sabe que es tu portátil.",
+      layers: [L("inner", "Respuesta", "34.160.111.145:443 → 10.66.0.2")] },
+    { path: ["vpn", "host", "internet", "router", "laptop"], wrap: "both", label: "WG", title: "Viaja cifrada de vuelta",
+      body: "wg0 la cifra y la manda a la última dirección desde la que habló tu portátil (88.12.34.56:60668). Tu router la reconoce por el NAT y te la entrega.",
+      layers: [L("outer", "Paquete exterior · IP + UDP", "35.255.164.51:51820 → 88.12.34.56:60668"), wgHdr, L("inner", "Respuesta · cifrada", "34.160.111.145:443 → 10.66.0.2", true)] },
+    { at: "laptop", wrap: "inner", label: "IP", title: "Resultado: la web ve la IP del servidor",
+      body: "Tu portátil la descifra y la entrega a la aplicación. Para ifconfig.me, estás en Google Cloud.",
+      layers: [L("note", "Respuesta de ifconfig.me", "35.255.164.51")], verdict: ["ok", "TU IP: 35.255.164.51"] },
+  ]},
+  { id: "pg", kind: "drop", name: "Intentar entrar a postgres", vpn: true, steps: [
+    ...tunnelPrefix("172.18.0.5:5432", "TCP · postgres", "0.0.0.0/1 manda también 172.18.x por el túnel."),
+    fwStep("172.18.0.5:5432", "TCP · postgres", 2, "El contenedor vpn está conectado a la red Docker proyectos, donde viven postgres, mongo y redis. La regla 3 corta todo lo que vaya a 172.16.0.0/12: la VPN es para salir a internet, no para entrar a la red interna. Para las bases de datos está el bastión SSH."),
+  ]},
+  { id: "meta", kind: "drop", name: "Metadatos de GCP", vpn: true, steps: [
+    ...tunnelPrefix("169.254.169.254:80", "HTTP", "169.254.169.254 cae en 128.0.0.0/1."),
+    fwStep("169.254.169.254:80", "HTTP", 5, "Desde dentro de una VM de Google Cloud, 169.254.169.254 entrega datos de la máquina y tokens de su cuenta de servicio. Si un cliente de la VPN llegara ahí, podría actuar como el servidor. La regla 6 lo impide."),
+  ]},
+  { id: "peer", kind: "drop", name: "Hablar con otro cliente", vpn: true, steps: [
+    ...tunnelPrefix("10.66.0.3:22", "TCP · ssh", "10.66.0.0/22 es la red de la VPN."),
+    fwStep("10.66.0.3:22", "TCP · ssh", 0, "10.66.0.3 es otro portátil conectado. Para llegar a él, el paquete tendría que volver a salir por wg0: la regla 1 lo descarta. Cada cliente está aislado de los demás."),
+  ]},
+  { id: "smtp", kind: "drop", name: "Enviar correo (SMTP 25)", vpn: true, steps: [
+    ...tunnelPrefix("142.250.102.27:25", "TCP · SMTP", "142.250.x cae en 128.0.0.0/1."),
+    fwStep("142.250.102.27:25", "TCP · SMTP", 7, "Es internet, pero al puerto 25. Si alguien enviara spam desde la VPN, quemaría la reputación de la IP del servidor. Se responde con un RST para que el programa falle rápido en vez de esperar."),
+  ]},
+  { id: "dnsold", kind: "drop", name: "DNS con Tailscale (config antigua)", vpn: true, steps: [
+    ...tunnelPrefix("192.168.1.1:53", "UDP · DNS", "con AllowedIPs = 0.0.0.0/0, WireGuard acepta cualquier destino, también tu router."),
+    fwStep("192.168.1.1:53", "UDP · DNS", 3, "El resolver de Tailscale (100.100.100.100) reenvía las consultas a tu router. Con la config antigua parte de ese tráfico acababa en el túnel, y en el servidor 192.168.x es red privada: regla 4, descartado. Sin DNS no se resuelve ningún nombre y parece que no funciona nada.", "Sin respuesta: te quedas sin DNS"),
+  ]},
+  { id: "dnsnew", kind: "ok", name: "DNS con Tailscale (config actual)", vpn: true, steps: [
+    { at: "laptop", wrap: "inner", label: "IP", title: "La consulta DNS va a tu router",
+      body: "La config actual excluye 10/8, 172.16/12, 192.168/16 y 100.64/10 de AllowedIPs. 192.168.1.1 no está en la lista, así que WireGuard no lo toca y sale por tu red local.",
+      layers: [L("inner", "Paquete", "192.168.1.34 → 192.168.1.1:53  (UDP · DNS)"), L("note", "Decisión de ruta", "192.168.1.0/24 → en0 (red local) · fuera del túnel")] },
+    { path: ["laptop", "router"], wrap: "inner", label: "IP", title: "El router responde",
+      body: "Tailscale, tu red de casa y la VPN conviven: lo privado va por su camino y todo lo demás por el túnel.",
+      layers: [L("inner", "Consulta", "example.org ?  (A)")] },
+    { path: ["router", "laptop"], wrap: "inner", label: "IP", title: "Resultado: el DNS funciona",
+      body: "La respuesta vuelve directa. A partir de aquí la navegación va por la VPN como en el caso «Con VPN: navegar».",
+      layers: [L("note", "Respuesta", "example.org → 104.20.26.136")], verdict: ["ok", "DNS OK"] },
+  ]},
+];
+
+// ---------------- motor de la simulación ----------------
+let scn = SCENARIOS[1], idx = 0, playing = false, timer = null, anim = null;
+let pos = { x: NODES.laptop.x, y: NODES.laptop.y };
+
+function setPkt(x, y) { pos = { x, y }; pkt.setAttribute("transform", `translate(${x},${y - 44})`); }
+function endNode(step) { return step.at || step.path[step.path.length - 1]; }
+function styleFor(step) {
+  pOuter.style.display = step.wrap === "both" ? "" : "none";
+  pInner.setAttribute("x", step.wrap === "both" ? -21 : -26);
+  pInner.setAttribute("width", step.wrap === "both" ? 42 : 52);
+  pLabel.textContent = step.label;
+  xmark.style.display = step.x ? "" : "none";
+}
+function highlight(id) {
+  for (const [k, g] of Object.entries(nodeEls)) g.classList.toggle("active", k === id);
+  const n = NODES[id];
+  pulse.setAttribute("cx", n.x); pulse.setAttribute("cy", n.y);
+  pulse.classList.toggle("on", true);
+}
+function animatePath(path, done) {
+  cancelAnimationFrame(anim);
+  const pts = path.map((n) => NODES[n]);
+  const segs = [];
+  let total = 0;
+  for (let i = 1; i < pts.length; i++) { const d = Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y); segs.push(d); total += d; }
+  if (reduceMotion || total === 0) { const e = pts[pts.length - 1]; setPkt(e.x, e.y); done(); return; }
+  const dur = Math.min(2200, 500 + total * 2.2), t0 = performance.now();
+  const tick = (now) => {
+    let p = Math.min(1, (now - t0) / dur);
+    p = p < .5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2;
+    let d = p * total, i = 0;
+    while (i < segs.length - 1 && d > segs[i]) { d -= segs[i]; i++; }
+    const a = pts[i], b = pts[i + 1], f = segs[i] ? d / segs[i] : 1;
+    setPkt(a.x + (b.x - a.x) * f, a.y + (b.y - a.y) * f);
+    if (p < 1) anim = requestAnimationFrame(tick); else done();
+  };
+  anim = requestAnimationFrame(tick);
+}
+
+function renderInfo() {
+  const st = scn.steps[idx];
+  $("stepno").textContent = `${scn.name} · paso ${idx + 1} de ${scn.steps.length}`;
+  $("stitle").textContent = st.title;
+  $("sbody").textContent = st.body;
+  const v = $("verdict");
+  v.hidden = !st.verdict;
+  if (st.verdict) { v.className = "verdict " + st.verdict[0]; v.textContent = st.verdict[1]; }
+  $("layers").replaceChildren(...st.layers.map((l) => {
+    const d = document.createElement("div");
+    d.className = `layer ${l.kind}${l.sealed ? " sealed" : ""}`;
+    const b = document.createElement("b"); b.textContent = l.title + (l.sealed ? " (ilegible fuera de los extremos)" : "");
+    d.append(b, document.createTextNode(l.text));
+    return d;
+  }));
+  const rb = $("rulesbox");
+  rb.hidden = st.hit === undefined;
+  if (st.hit !== undefined) {
+    $("rules").replaceChildren(...RULES.map(([m, a], i) => {
+      const li = document.createElement("li");
+      if (i < st.hit) li.className = "passed";
+      if (i === st.hit) li.className = "hit " + (a === "ACCEPT" ? "ok" : "drop");
+      const s1 = document.createElement("span"); s1.textContent = `${i + 1}. ${m}`;
+      const s2 = document.createElement("span"); s2.className = "act"; s2.textContent = a;
+      li.append(s1, s2);
+      return li;
+    }));
+  }
+  $("progress").replaceChildren(...scn.steps.map((_, i) => {
+    const e = document.createElement("i"); e.className = i < idx ? "done" : i === idx ? "now" : ""; return e;
+  }));
+  $("prev").disabled = idx === 0;
+  $("next").disabled = idx === scn.steps.length - 1;
+}
+
+function go(i, animate) {
+  idx = i;
+  const st = scn.steps[idx];
+  styleFor(st);
+  renderInfo();
+  const target = endNode(st);
+  highlight(target);
+  const finish = () => { if (playing) timer = setTimeout(advance, reduceMotion ? 2600 : 2200); };
+  if (animate && st.path) {
+    // si el paquete no está en el inicio del recorrido (p. ej. tras «anterior»), lo colocamos ahí
+    const s = NODES[st.path[0]];
+    if (Math.hypot(pos.x - s.x, pos.y - s.y) > 1) setPkt(s.x, s.y);
+    animatePath(st.path, finish);
+  } else {
+    cancelAnimationFrame(anim);
+    setPkt(NODES[target].x, NODES[target].y);
+    finish();
+  }
+}
+function advance() {
+  clearTimeout(timer);
+  if (idx < scn.steps.length - 1) go(idx + 1, true);
+  else setPlaying(false);
+}
+function setPlaying(p) {
+  playing = p;
+  clearTimeout(timer);
+  $("play").textContent = p ? "❚❚ Pausa" : "▶ Reproducir";
+  if (p) {
+    if (idx >= scn.steps.length - 1) go(0, false);
+    timer = setTimeout(advance, 900);
+  }
+}
+function selectScenario(s) {
+  setPlaying(false);
+  scn = s;
+  for (const b of $("scenarios").children) b.setAttribute("aria-pressed", String(b.dataset.id === s.id));
+  tunnel.style.opacity = s.vpn ? 1 : 0;
+  tunnelLabel.style.opacity = s.vpn ? 1 : 0;
+  go(0, false);
+}
+for (const s of SCENARIOS) {
+  const b = document.createElement("button");
+  b.className = "scn"; b.dataset.id = s.id; b.dataset.kind = s.kind;
+  const dot = document.createElement("span"); dot.className = "dot";
+  b.append(dot, document.createTextNode(s.name));
+  b.onclick = () => selectScenario(s);
+  $("scenarios").append(b);
+}
+$("next").onclick = () => { setPlaying(false); if (idx < scn.steps.length - 1) go(idx + 1, true); };
+$("prev").onclick = () => { setPlaying(false); if (idx > 0) go(idx - 1, false); };
+$("reset").onclick = () => { setPlaying(false); go(0, false); };
+$("play").onclick = () => setPlaying(!playing);
+selectScenario(scn);
+
+// ---------------- claves X25519 ----------------
+let privShown = false, privKey = "";
+const b64 = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf)));
+$("genkey").onclick = async () => {
+  try {
+    const kp = await crypto.subtle.generateKey({ name: "X25519" }, true, ["deriveBits"]);
+    const pkcs8 = new Uint8Array(await crypto.subtle.exportKey("pkcs8", kp.privateKey));
+    privKey = b64(pkcs8.slice(-32));
+    $("kpub").textContent = b64(await crypto.subtle.exportKey("raw", kp.publicKey));
+    privShown = false;
+    $("kpriv").textContent = "•".repeat(44);
+    $("showpriv").disabled = false;
+    $("showpriv").textContent = "Mostrar privada";
+  } catch (e) {
+    $("keynote").textContent = "Este navegador no puede generar claves X25519 con WebCrypto. Prueba con Chrome, Firefox o Safari actualizados.";
+  }
+};
+$("showpriv").onclick = () => {
+  privShown = !privShown;
+  $("kpriv").textContent = privShown ? privKey : "•".repeat(44);
+  $("showpriv").textContent = privShown ? "Ocultar privada" : "Mostrar privada";
+};
+
+// ---------------- AllowedIPs ----------------
+const NEW_RANGES = "1.0.0.0/8, 2.0.0.0/7, 4.0.0.0/6, 8.0.0.0/7, 11.0.0.0/8, 12.0.0.0/6, 16.0.0.0/4, 32.0.0.0/3, 64.0.0.0/3, 96.0.0.0/6, 100.0.0.0/10, 100.128.0.0/9, 101.0.0.0/8, 102.0.0.0/7, 104.0.0.0/5, 112.0.0.0/5, 120.0.0.0/6, 124.0.0.0/7, 126.0.0.0/8, 128.0.0.0/3, 160.0.0.0/5, 168.0.0.0/8, 169.0.0.0/9, 169.128.0.0/10, 169.192.0.0/11, 169.224.0.0/12, 169.240.0.0/13, 169.248.0.0/14, 169.252.0.0/15, 169.255.0.0/16, 170.0.0.0/7, 172.0.0.0/12, 172.32.0.0/11, 172.64.0.0/10, 172.128.0.0/9, 173.0.0.0/8, 174.0.0.0/7, 176.0.0.0/4, 192.0.0.0/9, 192.128.0.0/11, 192.160.0.0/13, 192.169.0.0/16, 192.170.0.0/15, 192.172.0.0/14, 192.176.0.0/12, 192.192.0.0/10, 193.0.0.0/8, 194.0.0.0/7, 196.0.0.0/6, 200.0.0.0/5, 208.0.0.0/4, 10.66.0.0/22".split(", ");
+$("rangelist").textContent = NEW_RANGES.join("  ");
+const toInt = (ip) => {
+  const m = /^\s*(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\s*$/.exec(ip);
+  if (!m) return null;
+  const o = m.slice(1).map(Number);
+  if (o.some((x) => x > 255)) return null;
+  return ((o[0] << 24) >>> 0) + (o[1] << 16) + (o[2] << 8) + o[3];
+};
+const inCidr = (n, cidr) => {
+  const [base, bits] = cidr.split("/");
+  const b = Number(bits);
+  if (b === 0) return true;
+  const mask = (~0 << (32 - b)) >>> 0;
+  return ((n & mask) >>> 0) === ((toInt(base) & mask) >>> 0);
+};
+const WHAT = [
+  ["10.66.0.1/32", "el servidor de la VPN"], ["10.66.0.0/22", "otro cliente de la VPN"], ["192.168.0.0/16", "una red local (como la de tu casa)"],
+  ["172.16.0.0/12", "una red privada (p. ej. Docker)"], ["10.0.0.0/8", "una red privada"], ["100.100.100.100/32", "el DNS de Tailscale"],
+  ["100.64.0.0/10", "una IP de Tailscale / CGNAT"], ["169.254.169.254/32", "el servidor de metadatos de la nube"], ["169.254.0.0/16", "una dirección link-local"],
+  ["127.0.0.0/8", "tu propio equipo (loopback)"], ["224.0.0.0/4", "multicast"],
+];
+function serverVerdict(n) {
+  if (inCidr(n, "10.66.0.1/32")) return ["o", "El servidor solo responde a ping en 10.66.0.1; el resto se descarta."];
+  const rules = [["10.66.0.0/22", 1, "cliente a cliente"], ["10.0.0.0/8", 2], ["172.16.0.0/12", 3], ["192.168.0.0/16", 4], ["100.64.0.0/10", 5], ["169.254.0.0/16", 6],
+    ["127.0.0.0/8", 7], ["224.0.0.0/4", 7], ["240.0.0.0/4", 7], ["0.0.0.0/8", 7]];
+  for (const [c, r] of rules) if (inCidr(n, c)) return ["x", `En el servidor la regla ${r} lo descarta (${c}). Nunca llega a su destino.`];
+  return ["o", "En el servidor pasa el firewall (regla 9) y sale a internet con la IP 35.255.164.51."];
+}
+let cfg = "new";
+function check() {
+  const ip = $("ip").value, n = toInt(ip);
+  const out = [];
+  const line = (ic, sym, text) => {
+    const d = document.createElement("div"); d.className = "line";
+    const i = document.createElement("span"); i.className = "ic " + ic; i.textContent = sym;
+    const p = document.createElement("p"); p.textContent = text;
+    d.append(i, p); out.push(d);
+  };
+  if (n === null) { line("d", "?", "Escribe una IPv4, por ejemplo 192.168.1.1"); $("answer").replaceChildren(...out); return; }
+  const what = WHAT.find(([c]) => inCidr(n, c));
+  line("d", "i", what ? `${ip.trim()} es ${what[1]}.` : `${ip.trim()} es una IP pública de internet.`);
+  const ranges = cfg === "new" ? NEW_RANGES : ["0.0.0.0/0"];
+  const match = ranges.find((c) => inCidr(n, c));
+  if (match) {
+    line("t", "→", `WireGuard la mete en el túnel: está dentro de ${match}.`);
+    const [ic, text] = serverVerdict(n);
+    line(ic, ic === "x" ? "×" : "✓", text);
+  } else {
+    line("d", "↷", "Queda fuera de AllowedIPs: no entra en el túnel y sigue su camino normal (red local, Tailscale…).");
+  }
+  $("answer").replaceChildren(...out);
+}
+for (const ip of ["1.1.1.1", "192.168.1.1", "172.18.0.5", "169.254.169.254", "100.100.100.100", "10.66.0.3", "10.66.0.1"]) {
+  const c = document.createElement("button"); c.className = "chip"; c.textContent = ip;
+  c.onclick = () => { $("ip").value = ip; check(); };
+  $("chips").append(c);
+}
+const setCfg = (c) => { cfg = c; $("cfg-new").setAttribute("aria-pressed", String(c === "new")); $("cfg-old").setAttribute("aria-pressed", String(c === "old")); check(); };
+$("cfg-new").onclick = () => setCfg("new");
+$("cfg-old").onclick = () => setCfg("old");
+$("ip").addEventListener("input", check);
+check();
+</script>
+</body>
+</html>

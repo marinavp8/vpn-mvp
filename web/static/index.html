@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>VPN Alumnos</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/qrcode.js" defer></script>
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header>
+    <div class="brand"><span class="dot"></span> VPN Alumnos <small>CodeCrypto Academy</small></div>
+    <div class="who">
+      <span id="username"></span>
+      <form method="post" action="/logout"><button class="link">Salir</button></form>
+    </div>
+  </header>
+
+  <main>
+    <section class="card">
+      <h1>Mis dispositivos</h1>
+      <p class="muted">Todo tu tráfico de internet sale por el servidor de la academia mientras la VPN está activa.
+        Máximo <b id="max"></b> dispositivos.</p>
+      <ul id="devices" class="devices"></ul>
+      <p id="empty" class="muted" hidden>Aún no tienes ningún dispositivo.</p>
+    </section>
+
+    <section class="card" id="add-card">
+      <h2>Añadir dispositivo</h2>
+      <form id="add">
+        <label>Nombre <input id="name" maxlength="40" required placeholder="portátil, móvil…"></label>
+        <details>
+          <summary>Avanzado: ya tengo mi clave pública</summary>
+          <label>Clave pública WireGuard <input id="pubkey" placeholder="base64, 44 caracteres" spellcheck="false"></label>
+          <p class="muted">Si la rellenas, la clave privada la pones tú en tu cliente; aquí solo verás la configuración sin <code>PrivateKey</code>.</p>
+        </details>
+        <button id="add-btn" type="submit">Crear configuración</button>
+        <p id="error" class="error" role="alert"></p>
+      </form>
+    </section>
+
+    <section class="card" id="result" hidden>
+      <h2>Configuración de <span id="r-name"></span></h2>
+      <p class="warn">La clave privada se ha generado en tu navegador y <b>no se guarda en ningún sitio</b>.
+        Descárgala o escanea el QR ahora: si cierras esta página tendrás que crear el dispositivo de nuevo.</p>
+      <div class="result">
+        <div id="qr" class="qr"></div>
+        <div class="conf">
+          <pre id="conf"></pre>
+          <div class="row">
+            <button id="download">Descargar .conf</button>
+            <button id="copy" class="secondary">Copiar</button>
+            <button id="done" class="secondary">Hecho</button>
+          </div>
+        </div>
+      </div>
+      <p class="muted">Instala <a href="https://www.wireguard.com/install/" target="_blank" rel="noopener">WireGuard</a>
+        (Windows, macOS, Linux, Android, iOS) e importa el fichero o escanea el QR desde el móvil.</p>
+    </section>
+
+    <section class="card" id="admin" hidden>
+      <h2>Administración · todos los dispositivos</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Alumno</th><th>Dispositivo</th><th>IP</th><th>Último handshake</th><th>↓ / ↑</th><th></th></tr></thead>
+          <tbody id="all"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

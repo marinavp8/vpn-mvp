@@ -1,0 +1,9 @@
+# binarios
+/wgportal
+# secretos y configuraciones de cliente (llevan claves privadas)
+.env
+*.env
+*.conf
+*.key
+peers.json
+__pycache__/
